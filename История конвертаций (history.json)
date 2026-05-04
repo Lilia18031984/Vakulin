@@ -1,0 +1,11 @@
+[
+    {
+        "date": "2024-12-25 15:30:45",
+        "from_amount": 100,
+        "from_currency": "USD",
+        "to_amount": 92.5,
+        "to_currency": "EUR",
+        "rate": 0.925,
+        "conversion": "100 USD = 92.50 EUR"
+    }
+]
