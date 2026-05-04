@@ -1,0 +1,362 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import requests
+import json
+import os
+from datetime import datetime
+
+class CurrencyConverter:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Currency Converter - Конвертер валют")
+        self.root.geometry("900x700")
+        self.root.resizable(True, True)
+
+        # Файл для хранения истории
+        self.history_file = "history.json"
+        self.history = self.load_history()
+        
+        # API ключ (зарегистрируйтесь на https://app.exchangerate-api.com/sign-up)
+        # Free plan: 1500 запросов в месяц
+        self.api_key = "YOUR_API_KEY_HERE"  # Замените на ваш API ключ
+        self.base_url = "https://v6.exchangerate-api.com/v6"
+
+        # Доступные валюты (основные)
+        self.currencies = [
+            "USD", "EUR", "RUB", "GBP", "JPY", "CNY", "CHF", "CAD", 
+            "AUD", "TRY", "UAH", "KZT", "BYN", "PLN", "INR", "BRL"
+        ]
+
+        # Создание интерфейса
+        self.create_widgets()
+        
+        # Загрузка курсов при старте
+        self.update_rates()
+
+    def create_widgets(self):
+        # Основной фрейм с отступами
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # ==================== Верхняя панель - Конвертер ====================
+        converter_frame = ttk.LabelFrame(main_frame, text="Конвертер валют", padding="15")
+        converter_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # Сумма
+        amount_frame = ttk.Frame(converter_frame)
+        amount_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(amount_frame, text="Сумма:", font=("Arial", 11)).pack(side=tk.LEFT, padx=(0, 10))
+        self.amount_entry = ttk.Entry(amount_frame, width=20, font=("Arial", 11))
+        self.amount_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.amount_entry.bind("<Return>", lambda e: self.convert())
+
+        # Валюты
+        currency_frame = ttk.Frame(converter_frame)
+        currency_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        # Из валюты
+        ttk.Label(currency_frame, text="Из:", font=("Arial", 11)).pack(side=tk.LEFT, padx=(0, 10))
+        self.from_currency = ttk.Combobox(currency_frame, values=self.currencies, width=10, font=("Arial", 11))
+        self.from_currency.set("USD")
+        self.from_currency.pack(side=tk.LEFT, padx=(0, 20))
+
+        # Стрелка
+        ttk.Label(currency_frame, text="➡", font=("Arial", 14)).pack(side=tk.LEFT, padx=(0, 20))
+
+        # В валюту
+        ttk.Label(currency_frame, text="В:", font=("Arial", 11)).pack(side=tk.LEFT, padx=(0, 10))
+        self.to_currency = ttk.Combobox(currency_frame, values=self.currencies, width=10, font=("Arial", 11))
+        self.to_currency.set("EUR")
+        self.to_currency.pack(side=tk.LEFT)
+
+        # Кнопка конвертации
+        self.convert_btn = ttk.Button(converter_frame, text="🔄 Конвертировать", command=self.convert, width=20)
+        self.convert_btn.pack(pady=(0, 10))
+
+        # Результат
+        self.result_label = ttk.Label(converter_frame, text="Результат: ---", font=("Arial", 12, "bold"))
+        self.result_label.pack()
+
+        # Курс
+        self.rate_label = ttk.Label(converter_frame, text="Актуальный курс: ---", font=("Arial", 10), foreground="gray")
+        self.rate_label.pack()
+
+        # ==================== Средняя панель - Информация о курсах ====================
+        rates_frame = ttk.LabelFrame(main_frame, text="Актуальные курсы (к USD)", padding="10")
+        rates_frame.pack(fill=tk.X, pady=(0, 15))
+
+        # Создание таблицы курсов
+        columns = ("currency", "rate")
+        self.rates_tree = ttk.Treeview(rates_frame, columns=columns, show="headings", height=6)
+        
+        self.rates_tree.heading("currency", text="Валюта")
+        self.rates_tree.heading("rate", text="Курс к USD")
+        
+        self.rates_tree.column("currency", width=100)
+        self.rates_tree.column("rate", width=150)
+        
+        # Скроллбар для таблицы курсов
+        rates_scrollbar = ttk.Scrollbar(rates_frame, orient=tk.VERTICAL, command=self.rates_tree.yview)
+        self.rates_tree.configure(yscrollcommand=rates_scrollbar.set)
+        
+        self.rates_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        rates_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Кнопка обновления курсов
+        self.update_rates_btn = ttk.Button(rates_frame, text="Обновить курсы", command=self.update_rates)
+        self.update_rates_btn.pack(pady=(10, 0))
+
+        # ==================== Нижняя панель - История ====================
+        history_frame = ttk.LabelFrame(main_frame, text="История конвертаций", padding="10")
+        history_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Таблица истории
+        hist_columns = ("date", "from_amount", "from_curr", "to_amount", "to_curr", "rate")
+        self.history_tree = ttk.Treeview(history_frame, columns=hist_columns, show="headings", height=8)
+        
+        self.history_tree.heading("date", text="Дата и время")
+        self.history_tree.heading("from_amount", text="Сумма")
+        self.history_tree.heading("from_curr", text="Из")
+        self.history_tree.heading("to_amount", text="Результат")
+        self.history_tree.heading("to_curr", text="В")
+        self.history_tree.heading("rate", text="Курс")
+        
+        # Настройка ширины колонок
+        self.history_tree.column("date", width=150)
+        self.history_tree.column("from_amount", width=100)
+        self.history_tree.column("from_curr", width=60)
+        self.history_tree.column("to_amount", width=100)
+        self.history_tree.column("to_curr", width=60)
+        self.history_tree.column("rate", width=100)
+        
+        # Скроллбар для истории
+        hist_scrollbar = ttk.Scrollbar(history_frame, orient=tk.VERTICAL, command=self.history_tree.yview)
+        self.history_tree.configure(yscrollcommand=hist_scrollbar.set)
+        
+        self.history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        hist_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Кнопки управления историей
+        hist_btn_frame = ttk.Frame(history_frame)
+        hist_btn_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        self.clear_history_btn = ttk.Button(hist_btn_frame, text="🗑 Очистить историю", command=self.clear_history)
+        self.clear_history_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.export_history_btn = ttk.Button(hist_btn_frame, text="💾 Экспорт истории", command=self.export_history)
+        self.export_history_btn.pack(side=tk.LEFT)
+        
+        # Статусная строка
+        self.status_var = tk.StringVar()
+        self.status_var.set("Готов к работе. Используйте exchangerate-api.com")
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def load_history(self):
+        """Загрузка истории из JSON файла"""
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                return []
+        return []
+
+    def save_history(self):
+        """Сохранение истории в JSON файл"""
+        with open(self.history_file, 'w', encoding='utf-8') as f:
+            json.dump(self.history, f, indent=4, ensure_ascii=False)
+
+    def update_rates(self):
+        """Обновление курсов валют через API"""
+        self.status_var.set("Обновление курсов валют...")
+        
+        # Очистка таблицы курсов
+        for item in self.rates_tree.get_children():
+            self.rates_tree.delete(item)
+        
+        try:
+            # Запрос курсов для USD как базовой валюты
+            response = requests.get(f"{self.base_url}/{self.api_key}/latest/USD", timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("result") == "success":
+                    rates = data.get("conversion_rates", {})
+                    
+                    # Отображение основных валют
+                    for currency in self.currencies:
+                        if currency in rates:
+                            rate = rates[currency]
+                            self.rates_tree.insert("", tk.END, values=(currency, f"{rate:.4f}"))
+                    
+                    self.status_var.set(f"Курсы обновлены: {data.get('time_last_update_utc', 'неизвестно')}")
+                    messagebox.showinfo("Успех", "Курсы валют успешно обновлены!")
+                else:
+                    self.status_var.set("Ошибка API: неверный ответ")
+                    messagebox.showerror("Ошибка", "API вернул ошибку. Проверьте API ключ!")
+            else:
+                self.status_var.set(f"Ошибка API: {response.status_code}")
+                messagebox.showerror("Ошибка", f"Не удалось получить курсы. Код ошибки: {response.status_code}")
+                
+        except requests.exceptions.RequestException as e:
+            self.status_var.set("Ошибка соединения")
+            messagebox.showerror("Ошибка", f"Не удалось подключиться к API\n{str(e)}")
+
+    def convert(self):
+        """Конвертация валюты"""
+        # Валидация суммы
+        amount_str = self.amount_entry.get().strip()
+        
+        if not amount_str:
+            messagebox.showwarning("Ошибка", "Введите сумму для конвертации!")
+            return
+        
+        try:
+            amount = float(amount_str)
+            if amount <= 0:
+                messagebox.showerror("Ошибка", "Сумма должна быть положительным числом!")
+                return
+        except ValueError:
+            messagebox.showerror("Ошибка", "Сумма должна быть числом!")
+            return
+        
+        from_curr = self.from_currency.get()
+        to_curr = self.to_currency.get()
+        
+        if not from_curr or not to_curr:
+            messagebox.showwarning("Ошибка", "Выберите валюты для конвертации!")
+            return
+        
+        self.status_var.set(f"Конвертация {amount} {from_curr} → {to_curr}...")
+        
+        try:
+            # Запрос курса для исходной валюты
+            response = requests.get(f"{self.base_url}/{self.api_key}/latest/{from_curr}", timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get("result") == "success":
+                    rates = data.get("conversion_rates", {})
+                    
+                    if to_curr in rates:
+                        rate = rates[to_curr]
+                        result = amount * rate
+                        
+                        # Отображение результата
+                        self.result_label.config(text=f"Результат: {result:.2f} {to_curr}")
+                        self.rate_label.config(text=f"Курс: 1 {from_curr} = {rate:.4f} {to_curr}")
+                        
+                        # Сохранение в историю
+                        history_entry = {
+                            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "from_amount": amount,
+                            "from_currency": from_curr,
+                            "to_amount": round(result, 2),
+                            "to_currency": to_curr,
+                            "rate": rate,
+                            "conversion": f"{amount} {from_curr} = {result:.2f} {to_curr}"
+                        }
+                        
+                        self.history.append(history_entry)
+                        self.save_history()
+                        self.display_history()
+                        
+                        self.status_var.set(f"Конвертация выполнена: {amount} {from_curr} = {result:.2f} {to_curr}")
+                    else:
+                        self.status_var.set(f"Валюта {to_curr} не найдена")
+                        messagebox.showerror("Ошибка", f"Валюта {to_curr} не найдена в API!")
+                else:
+                    self.status_var.set("Ошибка API")
+                    messagebox.showerror("Ошибка", "API вернул ошибку. Попробуйте обновить курсы.")
+            else:
+                self.status_var.set(f"Ошибка API: {response.status_code}")
+                messagebox.showerror("Ошибка", f"Не удалось выполнить конвертацию. Код ошибки: {response.status_code}")
+                
+        except requests.exceptions.RequestException as e:
+            self.status_var.set("Ошибка соединения")
+            messagebox.showerror("Ошибка", f"Не удалось подключиться к API\n{str(e)}")
+
+    def display_history(self):
+        """Отображение истории в таблице"""
+        # Очистка таблицы
+        for item in self.history_tree.get_children():
+            self.history_tree.delete(item)
+        
+        # Добавление записей (от новых к старым)
+        for entry in reversed(self.history):
+            self.history_tree.insert("", tk.END, values=(
+                entry["date"],
+                f"{entry['from_amount']:.2f}",
+                entry["from_currency"],
+                f"{entry['to_amount']:.2f}",
+                entry["to_currency"],
+                f"{entry['rate']:.4f}"
+            ))
+        
+        # Обновление статуса
+        if self.history:
+            self.status_var.set(f"Всего конвертаций в истории: {len(self.history)}")
+        else:
+            self.status_var.set("История пуста")
+
+    def clear_history(self):
+        """Очистка истории"""
+        if not self.history:
+            messagebox.showinfo("Информация", "История уже пуста")
+            return
+        
+        if messagebox.askyesno("Подтверждение", "Вы уверены, что хотите очистить всю историю?"):
+            self.history = []
+            self.save_history()
+            self.display_history()
+            self.status_var.set("История очищена")
+            messagebox.showinfo("Успех", "История успешно очищена!")
+
+    def export_history(self):
+        """Экспорт истории в JSON файл с указанием имени"""
+        if not self.history:
+            messagebox.showwarning("Предупреждение", "Нет данных для экспорта")
+            return
+        
+        from tkinter import filedialog
+        
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialfile=f"conversion_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(self.history, f, indent=4, ensure_ascii=False)
+                messagebox.showinfo("Успех", f"История экспортирована в файл:\n{filename}")
+                self.status_var.set(f"История экспортирована в {filename}")
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось экспортировать историю\n{str(e)}")
+
+def main():
+    root = tk.Tk()
+    
+    # Проверка API ключа
+    app = CurrencyConverter(root)
+    
+    # Если API ключ не изменен, показать предупреждение
+    if app.api_key == "YOUR_API_KEY_HERE":
+        messagebox.showwarning(
+            "Внимание", 
+            "Необходимо получить API ключ!\n\n"
+            "1. Зарегистрируйтесь на https://app.exchangerate-api.com/sign-up\n"
+            "2. Получите бесплатный API ключ\n"
+            "3. Замените 'YOUR_API_KEY_HERE' в коде на ваш ключ\n\n"
+            "Приложение будет работать, но для получения курсов нужен ключ."
+        )
+    
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
